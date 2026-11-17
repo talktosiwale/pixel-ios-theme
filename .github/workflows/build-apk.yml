@@ -1,4 +1,3 @@
-
 name: Build Pixel iOS Theme APK
 
 on:
@@ -12,7 +11,6 @@ permissions:
 
 jobs:
   build:
-    name: Build Pixel iOS Theme APK
     runs-on: ubuntu-latest
 
     steps:
@@ -27,43 +25,63 @@ jobs:
 
       - name: Set up Android SDK
         uses: android-actions/setup-android@v3
-        with:
-          cmdline-tools-version: 11076708
-          accept-android-sdk-licenses: true
-          packages: |
-            platform-tools
-            platforms;android-35
-            build-tools;35.0.0
+
+      - name: Install Android SDK packages
+        shell: bash
+        run: |
+          set -euo pipefail
+          sdkmanager --install "platform-tools"
+          sdkmanager --install "platforms;android-35"
+          sdkmanager --install "build-tools;35.0.0"
 
       - name: Extract Android project
+        id: extract
+        shell: bash
         run: |
-          unzip -o Pixel_iOS_Theme_App_Project.zip
-          test -d Pixel_iOS_Theme_App_Project
+          set -euo pipefail
+          mkdir -p extracted
+          unzip -q Pixel_iOS_Theme_App_Project.zip -d extracted
 
-      - name: Check Gradle files
-        working-directory: Pixel_iOS_Theme_App_Project
-        run: |
-          ls -la
-          test -f settings.gradle || test -f settings.gradle.kts
-          test -f app/build.gradle || test -f app/build.gradle.kts
+          GRADLEW="$(find extracted -type f -name gradlew -print -quit)"
 
-      - name: Build debug APK
-        working-directory: Pixel_iOS_Theme_App_Project
-        run: |
-          if [ -f ./gradlew ]; then
-            chmod +x ./gradlew
-            ./gradlew assembleDebug
-          else
-            echo "ERROR: Gradle wrapper (gradlew) is missing."
-            echo "The project must include its Gradle wrapper."
+          if [ -z "$GRADLEW" ]; then
+            echo "ERROR: gradlew was not found in the ZIP."
             exit 1
           fi
 
+          PROJECT_DIR="$(dirname "$GRADLEW")"
+          echo "project_dir=$PROJECT_DIR" >> "$GITHUB_OUTPUT"
+
+      - name: Build debug APK
+        shell: bash
+        env:
+          PROJECT_DIR: ${{ steps.extract.outputs.project_dir }}
+        run: |
+          set -euo pipefail
+          chmod +x "$PROJECT_DIR/gradlew"
+
+          "$PROJECT_DIR/gradlew" \
+            -p "$PROJECT_DIR" \
+            assembleDebug \
+            --no-daemon
+
+          APK_PATH="$(find "$PROJECT_DIR" \
+            -type f \
+            -path '*/build/outputs/apk/debug/*.apk' \
+            -print -quit)"
+
+          if [ -z "$APK_PATH" ]; then
+            echo "ERROR: APK was not generated."
+            exit 1
+          fi
+
+          cp "$APK_PATH" "$GITHUB_WORKSPACE/app-debug.apk"
+
       - name: Upload APK
-        if: success()
         uses: actions/upload-artifact@v4
         with:
-          name: Pixel-iOS-Theme-debug-apk
-          path: Pixel_iOS_Theme_App_Project/app/build/outputs/apk/debug/app-debug.apk
+          name: Pixel-iOS-Theme-APK
+          path: app-debug.apk
           if-no-files-found: error
           retention-days: 7
+          
