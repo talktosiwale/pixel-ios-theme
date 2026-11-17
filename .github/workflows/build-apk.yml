@@ -19,42 +19,96 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Set up Java
+      - name: Set up Java 17
         uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: '17'
 
-      - name: Set up Android SDK
-        uses: android-actions/setup-android@v3
+      - name: Set up Android SDK and accept licences
+        uses: android-actions/setup-android@v4
         with:
           accept-android-sdk-licenses: true
-          packages: |
-            platform-tools
-            platforms;android-35
-            build-tools;35.0.0
+          log-accepted-android-sdk-licenses: false
+          packages: 'platform-tools platforms;android-35 build-tools;35.0.0'
 
       - name: Extract Android project
+        shell: bash
         run: |
-          unzip -o Pixel_iOS_Theme_App_Project.zip -d .
-          test -d Pixel_iOS_Theme_App_Project
+          set -euo pipefail
 
-      - name: Check Gradle wrapper
-        working-directory: Pixel_iOS_Theme_App_Project
-        run: |
-          if [ ! -f gradlew ]; then
-            echo "ERROR: Gradle wrapper file gradlew is missing."
+          ZIP_FILE="Pixel_iOS_Theme_App_Project.zip"
+
+          if [ ! -f "$ZIP_FILE" ]; then
+            echo "ERROR: Project ZIP file was not found."
             exit 1
           fi
-          chmod +x gradlew
+
+          mkdir -p extracted
+          unzip -o -q "$ZIP_FILE" -d extracted
+
+          GRADLEW="$(find extracted -type f -name gradlew -print -quit)"
+
+          if [ -z "$GRADLEW" ]; then
+            echo "ERROR: No Gradle wrapper found in the ZIP file."
+            exit 1
+          fi
+
+          PROJECT_DIR="$(dirname "$GRADLEW")"
+          PROJECT_DIR="$(realpath "$PROJECT_DIR")"
+
+          echo "PROJECT_DIR=$PROJECT_DIR" >> "$GITHUB_ENV"
+
+          chmod +x "$PROJECT_DIR/gradlew"
+
+          echo "Project directory: $PROJECT_DIR"
+          ls -la "$PROJECT_DIR"
+
+      - name: Verify Android SDK
+        shell: bash
+        run: |
+          set -euo pipefail
+          sdkmanager --version
+          adb version
+          test -d "$ANDROID_HOME/platforms/android-35"
 
       - name: Build debug APK
-        working-directory: Pixel_iOS_Theme_App_Project
-        run: ./gradlew --no-daemon assembleDebug
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          "$PROJECT_DIR/gradlew" \
+            -p "$PROJECT_DIR" \
+            --no-daemon \
+            --stacktrace \
+            assembleDebug
+
+      - name: Locate and prepare APK
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          APK_PATH="$(find "$PROJECT_DIR" \
+            -type f \
+            -path '*/build/outputs/apk/debug/*.apk' \
+            -print -quit)"
+
+          if [ -z "$APK_PATH" ]; then
+            echo "ERROR: Debug APK was not generated."
+            echo "Searching for any generated APK files..."
+            find "$PROJECT_DIR" -type f -name '*.apk' -print || true
+            exit 1
+          fi
+
+          cp "$APK_PATH" "$GITHUB_WORKSPACE/app-debug.apk"
+
+          echo "APK successfully prepared:"
+          ls -lh "$GITHUB_WORKSPACE/app-debug.apk"
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
           name: Pixel-iOS-Theme-debug-apk
-          path: Pixel_iOS_Theme_App_Project/app/build/outputs/apk/debug/app-debug.apk
+          path: app-debug.apk
           if-no-files-found: error
+          retention-days: 7
