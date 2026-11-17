@@ -13,7 +13,7 @@ permissions:
 jobs:
   build:
     name: Build Pixel iOS Theme APK
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
 
     steps:
       - name: Checkout repository
@@ -25,14 +25,28 @@ jobs:
           distribution: temurin
           java-version: '17'
 
-      - name: Set up Android SDK and accept licences
-        uses: android-actions/setup-android@v4
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
         with:
-          accept-android-sdk-licenses: true
-          log-accepted-android-sdk-licenses: false
-          packages: 'platform-tools platforms;android-35 build-tools;35.0.0'
+          gradle-version: '8.9'
 
-      - name: Extract Android project
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v4
+
+      - name: Install Android SDK packages
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          yes | sdkmanager --licenses >/dev/null || true
+
+          sdkmanager --install \
+            "platform-tools" \
+            "platforms;android-35" \
+            "build-tools;35.0.0"
+
+      - name: Extract and locate Android project
+        id: project
         shell: bash
         run: |
           set -euo pipefail
@@ -40,50 +54,105 @@ jobs:
           ZIP_FILE="Pixel_iOS_Theme_App_Project.zip"
 
           if [ ! -f "$ZIP_FILE" ]; then
-            echo "ERROR: Project ZIP file was not found."
+            echo "::error::Project ZIP file was not found."
             exit 1
           fi
 
           mkdir -p extracted
           unzip -o -q "$ZIP_FILE" -d extracted
 
-          GRADLEW="$(find extracted -type f -name gradlew -print -quit)"
+          echo "Files extracted from project ZIP:"
+          find extracted -maxdepth 4 -type f \
+            \( -name 'settings.gradle' \
+            -o -name 'settings.gradle.kts' \
+            -o -name 'build.gradle' \
+            -o -name 'build.gradle.kts' \
+            -o -name 'gradlew' \) -print
 
-          if [ -z "$GRADLEW" ]; then
-            echo "ERROR: No Gradle wrapper found in the ZIP file."
-            exit 1
+          PROJECT_FILE=""
+
+          while IFS= read -r file; do
+            if [[ "$file" == */settings.gradle || \
+                  "$file" == */settings.gradle.kts ]]; then
+              PROJECT_FILE="$file"
+              break
+            fi
+          done < <(
+            find extracted -type f \
+              \( -name settings.gradle \
+              -o -name settings.gradle.kts \) \
+              -not -path '*/.gradle/*' | sort
+          )
+
+          if [ -n "$PROJECT_FILE" ]; then
+            PROJECT_DIR="$(dirname "$PROJECT_FILE")"
+          else
+            PROJECT_FILE="$(find extracted -type f \
+              \( -name build.gradle \
+              -o -name build.gradle.kts \) \
+              -not -path '*/build/*' \
+              -not -path '*/.gradle/*' | head -n 1 || true)"
+
+            if [ -z "$PROJECT_FILE" ]; then
+              echo "::error::No Gradle project files were found in the ZIP."
+              echo "The ZIP must contain settings.gradle or build.gradle."
+              exit 1
+            fi
+
+            PROJECT_DIR="$(dirname "$PROJECT_FILE")"
           fi
 
-          PROJECT_DIR="$(dirname "$GRADLEW")"
           PROJECT_DIR="$(realpath "$PROJECT_DIR")"
 
           echo "PROJECT_DIR=$PROJECT_DIR" >> "$GITHUB_ENV"
 
-          chmod +x "$PROJECT_DIR/gradlew"
-
-          echo "Project directory: $PROJECT_DIR"
+          echo "Android project directory: $PROJECT_DIR"
           ls -la "$PROJECT_DIR"
 
-      - name: Verify Android SDK
+      - name: Verify Android project
         shell: bash
         run: |
           set -euo pipefail
+
+          if [ ! -f "$PROJECT_DIR/build.gradle" ] && \
+             [ ! -f "$PROJECT_DIR/build.gradle.kts" ] && \
+             [ ! -f "$PROJECT_DIR/settings.gradle" ] && \
+             [ ! -f "$PROJECT_DIR/settings.gradle.kts" ]; then
+            echo "::error::The selected directory is not a Gradle project."
+            exit 1
+          fi
+
+          if [ -f "$PROJECT_DIR/gradlew" ]; then
+            chmod +x "$PROJECT_DIR/gradlew"
+            echo "Gradle wrapper found."
+          else
+            echo "Gradle wrapper is missing."
+            echo "The installed Gradle distribution will be used."
+          fi
+
           sdkmanager --version
           adb version
-          test -d "$ANDROID_HOME/platforms/android-35"
 
       - name: Build debug APK
         shell: bash
         run: |
           set -euo pipefail
 
-          "$PROJECT_DIR/gradlew" \
-            -p "$PROJECT_DIR" \
-            --no-daemon \
-            --stacktrace \
-            assembleDebug
+          if [ -f "$PROJECT_DIR/gradlew" ]; then
+            "$PROJECT_DIR/gradlew" \
+              -p "$PROJECT_DIR" \
+              --no-daemon \
+              --stacktrace \
+              assembleDebug
+          else
+            gradle \
+              -p "$PROJECT_DIR" \
+              --no-daemon \
+              --stacktrace \
+              assembleDebug
+          fi
 
-      - name: Locate and prepare APK
+      - name: Locate generated APK
         shell: bash
         run: |
           set -euo pipefail
@@ -94,21 +163,22 @@ jobs:
             -print -quit)"
 
           if [ -z "$APK_PATH" ]; then
-            echo "ERROR: Debug APK was not generated."
-            echo "Searching for any generated APK files..."
+            echo "::error::No debug APK was generated."
+            echo "Searching for APK files:"
             find "$PROJECT_DIR" -type f -name '*.apk' -print || true
             exit 1
           fi
 
-          cp "$APK_PATH" "$GITHUB_WORKSPACE/app-debug.apk"
+          mkdir -p "$GITHUB_WORKSPACE/output"
+          cp "$APK_PATH" "$GITHUB_WORKSPACE/output/app-debug.apk"
 
-          echo "APK successfully prepared:"
-          ls -lh "$GITHUB_WORKSPACE/app-debug.apk"
+          echo "APK created successfully."
+          ls -lh "$GITHUB_WORKSPACE/output/app-debug.apk"
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
           name: Pixel-iOS-Theme-debug-apk
-          path: app-debug.apk
+          path: output/app-debug.apk
           if-no-files-found: error
           retention-days: 7
