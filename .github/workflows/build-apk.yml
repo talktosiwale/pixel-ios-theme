@@ -4,37 +4,66 @@ name: Build Pixel iOS Theme APK
 on:
   workflow_dispatch:
   push:
-    branches: [main]
+    branches:
+      - main
 
 permissions:
   contents: read
 
 jobs:
   build:
+    name: Build Pixel iOS Theme APK
     runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
 
-      - uses: actions/setup-java@v4
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Java
+        uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: '17'
 
-      - uses: android-actions/setup-android@v3
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+        with:
+          cmdline-tools-version: 11076708
+          accept-android-sdk-licenses: true
+          packages: |
+            platform-tools
+            platforms;android-35
+            build-tools;35.0.0
 
-      - name: Install Android SDK
-        run: sdkmanager 'platforms;android-35' 'build-tools;35.0.0'
+      - name: Extract Android project
+        run: |
+          unzip -o Pixel_iOS_Theme_App_Project.zip
+          test -d Pixel_iOS_Theme_App_Project
 
-      - name: Extract project
-        run: unzip Pixel_iOS_Theme_App_Project.zip
-
-      - name: Build APK
+      - name: Check Gradle files
         working-directory: Pixel_iOS_Theme_App_Project
         run: |
-          gradle assembleDebug
+          ls -la
+          test -f settings.gradle || test -f settings.gradle.kts
+          test -f app/build.gradle || test -f app/build.gradle.kts
 
-      - uses: actions/upload-artifact@v4
+      - name: Build debug APK
+        working-directory: Pixel_iOS_Theme_App_Project
+        run: |
+          if [ -f ./gradlew ]; then
+            chmod +x ./gradlew
+            ./gradlew assembleDebug
+          else
+            echo "ERROR: Gradle wrapper (gradlew) is missing."
+            echo "The project must include its Gradle wrapper."
+            exit 1
+          fi
+
+      - name: Upload APK
+        if: success()
+        uses: actions/upload-artifact@v4
         with:
           name: Pixel-iOS-Theme-debug-apk
           path: Pixel_iOS_Theme_App_Project/app/build/outputs/apk/debug/app-debug.apk
-          
+          if-no-files-found: error
+          retention-days: 7
